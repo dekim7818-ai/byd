@@ -35,13 +35,24 @@ export async function fetchSeries(key, force = false) {
             source = 'CNN';
         }
         else {
-            const symbol = { oil: 'CL=F', move: '^MOVE', dollar: 'DX-Y.NYB' }[key];
-            const j = await (await get('https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) + '?range=2y&interval=1d')).json();
-            const r = j.chart?.result?.[0];
-            if (!r)
-                throw new Error('시계열 없음');
-            points = r.timestamp.flatMap((t, i) => { const v = r.indicators.quote[0].close[i]; return v !== null && Number.isFinite(v) ? [{ date: new Date(t * 1000).toISOString().slice(0, 10), value: v }] : []; });
-            source = 'Yahoo Finance';
+            // Use CNBC's public daily chart feed. Yahoo returns 429 from the hosting network.
+            // tradeTime is the market's observation date; do not shift it through UTC.
+            const symbol = { oil: '@CL.1', move: '.MOVE', dollar: '.DXY' }[key];
+            const query = 'query getQuoteChartData($symbol:String,$startDate:String,$endDate:String,$granularity:String){chartData(symbol:$symbol,startDate:$startDate,endDate:$endDate,granularity:$granularity){symbol allSymbols{symbol name} priceBars{close tradeTime}}}';
+            const url = new URL('https://webql-redesign.cnbcfm.com/graphql');
+            url.searchParams.set('query', query);
+            url.searchParams.set('variables', JSON.stringify({ symbol, startDate: from.replaceAll('-', '') + '000000', endDate: new Date().toISOString().slice(0, 10).replaceAll('-', '') + '235959', granularity: '1D' }));
+            const j = await (await get(url.href)).json();
+            const chart = j.data?.chartData;
+            if (j.errors?.length)
+                throw new Error('CNBC 차트 응답 오류');
+            if (chart?.symbol !== symbol || !chart.allSymbols?.some(s => s.symbol === symbol && s.name))
+                throw new Error('CNBC 지표 식별 불일치');
+            if (!Array.isArray(chart.priceBars))
+                throw new Error('CNBC 일별 시계열 없음');
+            points = chart.priceBars.flatMap(p => { const t = p.tradeTime, raw = p.close; if (!t || !/^\d{14}$/.test(t) || raw === null || raw === undefined || String(raw).trim() === '')
+                return []; const value = Number(String(raw).replaceAll(',', '')), date = t.slice(0, 4) + '-' + t.slice(4, 6) + '-' + t.slice(6, 8); const stamp = Date.parse(date + 'T00:00:00Z'); return Number.isFinite(value) && Number.isFinite(stamp) && new Date(stamp).toISOString().slice(0, 10) === date ? [{ date, value }] : []; });
+            source = 'CNBC';
         }
         points = Array.from(new Map(points.filter(p => Number.isFinite(p.value) && p.date >= from && p.date <= new Date().toISOString().slice(0, 10) && (key !== 'fear' || (p.value >= 0 && p.value <= 100))).map(p => [p.date, p])).values()).sort((a, b) => a.date.localeCompare(b.date));
         if (points.length < 2)
@@ -51,7 +62,7 @@ export async function fetchSeries(key, force = false) {
         return data;
     }
     catch (e) {
-        const data = { points: [], source: key === 'fear' ? 'CNN' : key === 'hy' ? 'ICE BofA · FRED' : '데이터 제공처', sourceUrl: meta[key].url, status: 'unavailable', fetchedAt: new Date().toISOString(), error: e instanceof Error ? e.message : '연결 실패' };
+        const data = { points: [], source: key === 'fear' ? 'CNN' : key === 'hy' ? 'ICE BofA · FRED' : key === 'oil' || key === 'move' || key === 'dollar' ? 'CNBC' : '데이터 제공처', sourceUrl: meta[key].url, status: 'unavailable', fetchedAt: new Date().toISOString(), error: e instanceof Error ? e.message : '연결 실패' };
         memory.set(key, { at: Date.now(), data });
         return data;
     }
