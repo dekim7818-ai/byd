@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: market-pulse
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DASHBOARD_USER
+        value: investor
+      - key: DASHBOARD_PASSWORD
+        sync: false
